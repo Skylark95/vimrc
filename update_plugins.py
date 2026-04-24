@@ -1,9 +1,6 @@
-import re
 import shutil
-import tempfile
-import urllib.request
-import zipfile
-from io import BytesIO
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from os import path
 
 # --- Globals ----------------------------------------------
@@ -58,46 +55,44 @@ dracula https://github.com/dracula/vim
 copilot.vim https://github.com/github/copilot.vim
 """.strip()
 
-GITHUB_ZIP = "%s/archive/master.zip"
-
 SOURCE_DIR = path.join(path.dirname(__file__), "sources_non_forked")
-
-
-def download_extract_replace(plugin_name, zip_path, temp_dir, source_dir):
-    # Download and extract file in temp dir
-    with urllib.request.urlopen(zip_path) as req:
-        zip_f = zipfile.ZipFile(BytesIO(req.read()))
-        zip_f.extractall(temp_dir)
-        content_disp = req.headers.get("Content-Disposition")
-
-    filename = re.findall("filename=(.+).zip", content_disp)[0]
-    plugin_temp_path = path.join(temp_dir, path.join(temp_dir, filename))
-
-    # Remove the current plugin and replace it with the extracted
-    plugin_dest_path = path.join(source_dir, plugin_name)
-
-    try:
-        shutil.rmtree(plugin_dest_path)
-    except OSError:
-        pass
-
-    shutil.move(plugin_temp_path, plugin_dest_path)
-    print("Updated {0}".format(plugin_name))
 
 
 def update(plugin):
     name, github_url = plugin.split(" ")
-    zip_path = GITHUB_ZIP % github_url
+    plugin_path = path.join(SOURCE_DIR, name)
+
     try:
-        download_extract_replace(name, zip_path, temp_directory, SOURCE_DIR)
+        if path.exists(plugin_path):
+            if path.exists(path.join(plugin_path, ".git")):
+                result = subprocess.run(
+                    ["git", "-C", plugin_path, "pull"],
+                    capture_output=True, text=True, check=True
+                )
+                if "Already up to date" in result.stdout:
+                    print("Already up to date: {}".format(name))
+                else:
+                    print("Updated {}".format(name))
+            else:
+                shutil.rmtree(plugin_path)
+                subprocess.run(
+                    ["git", "clone", github_url, plugin_path],
+                    capture_output=True, text=True, check=True
+                )
+                print("Cloned {} (replaced non-git dir)".format(name))
+        else:
+            subprocess.run(
+                ["git", "clone", github_url, plugin_path],
+                capture_output=True, text=True, check=True
+            )
+            print("Cloned {}".format(name))
     except Exception as exp:
         print("Could not update {}. Error was: {}".format(name, str(exp)))
 
 
 if __name__ == "__main__":
-    temp_directory = tempfile.mkdtemp()
-
-    try:
-        [update(x) for x in PLUGINS.splitlines()]
-    finally:
-        shutil.rmtree(temp_directory)
+    plugins = PLUGINS.splitlines()
+    with ThreadPoolExecutor() as executor:
+        futures = {executor.submit(update, p): p for p in plugins}
+        for future in as_completed(futures):
+            future.result()
